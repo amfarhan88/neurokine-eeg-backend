@@ -146,6 +146,17 @@ async def create_staff_user(payload: StaffUserCreate):
             json={"supabase_user_id": user_id}
         )
 
+        # Try updating nk_doctors too (in case it's a doctor account)
+        await client.patch(
+            f"{SUPABASE_URL}/rest/v1/nk_doctors?id=eq.{payload.staff_id}",
+            headers={
+                "apikey": service_key,
+                "Authorization": f"Bearer {service_key}",
+                "Content-Type": "application/json"
+            },
+            json={"supabase_user_id": user_id}
+        )
+
         return {"success": True, "user_id": user_id}
 
 @app.post("/auth/update-staff-password")
