@@ -4,7 +4,9 @@ import mne
 import numpy as np
 import tempfile
 import os
+import httpx
 from pydantic import BaseModel
+from pydantic import BaseModel as BM
 from typing import Optional, List
 
 app = FastAPI(title="NeuroKine EEG Analysis API")
@@ -83,6 +85,133 @@ def get_ilae_grade(pdr, delta_rel, theta_rel, alpha_rel):
 @app.get("/")
 def root():
     return {"status": "NeuroKine EEG Analysis API", "version": "1.0"}
+
+SUPABASE_URL = "https://yaihdkwgovrgbnfrrqjf.supabase.co"
+
+class StaffUserCreate(BM):
+    email: str
+    password: str
+    name: str
+    staff_id: str
+
+class StaffUserUpdate(BM):
+    staff_id: str
+    password: str
+
+@app.post("/auth/create-staff")
+async def create_staff_user(payload: StaffUserCreate):
+    service_key = os.environ.get("SUPABASE_SERVICE_KEY")
+    if not service_key:
+        raise HTTPException(500, "Service key not configured")
+
+    async with httpx.AsyncClient() as client:
+        # Create user in Supabase Auth
+        res = await client.post(
+            f"{SUPABASE_URL}/auth/v1/admin/users",
+            headers={
+                "apikey": service_key,
+                "Authorization": f"Bearer {service_key}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "email": payload.email,
+                "password": payload.password,
+                "email_confirm": True,
+                "user_metadata": {
+                    "name": payload.name,
+                    "role": "staff",
+                    "staff_id": payload.staff_id
+                }
+            }
+        )
+
+        if res.status_code not in [200, 201]:
+            error = res.json()
+            raise HTTPException(
+                res.status_code,
+                error.get("message", "Failed to create user")
+            )
+
+        user_data = res.json()
+        user_id = user_data.get("id")
+
+        # Update nk_staff with supabase_user_id
+        await client.patch(
+            f"{SUPABASE_URL}/rest/v1/nk_staff?id=eq.{payload.staff_id}",
+            headers={
+                "apikey": service_key,
+                "Authorization": f"Bearer {service_key}",
+                "Content-Type": "application/json"
+            },
+            json={"supabase_user_id": user_id}
+        )
+
+        return {"success": True, "user_id": user_id}
+
+@app.post("/auth/update-staff-password")
+async def update_staff_password(payload: StaffUserUpdate):
+    service_key = os.environ.get("SUPABASE_SERVICE_KEY")
+    if not service_key:
+        raise HTTPException(500, "Service key not configured")
+
+    async with httpx.AsyncClient() as client:
+        staff_res = await client.get(
+            f"{SUPABASE_URL}/rest/v1/nk_staff?id=eq.{payload.staff_id}&select=supabase_user_id",
+            headers={
+                "apikey": service_key,
+                "Authorization": f"Bearer {service_key}"
+            }
+        )
+        staff = staff_res.json()
+        if not staff or not staff[0].get("supabase_user_id"):
+            raise HTTPException(404, "Staff user not found")
+
+        user_id = staff[0]["supabase_user_id"]
+
+        res = await client.put(
+            f"{SUPABASE_URL}/auth/v1/admin/users/{user_id}",
+            headers={
+                "apikey": service_key,
+                "Authorization": f"Bearer {service_key}",
+                "Content-Type": "application/json"
+            },
+            json={"password": payload.password}
+        )
+
+        if res.status_code not in [200, 201]:
+            raise HTTPException(res.status_code, "Failed to update password")
+
+        return {"success": True}
+
+@app.delete("/auth/delete-staff/{staff_id}")
+async def delete_staff_user(staff_id: str):
+    service_key = os.environ.get("SUPABASE_SERVICE_KEY")
+    if not service_key:
+        raise HTTPException(500, "Service key not configured")
+
+    async with httpx.AsyncClient() as client:
+        staff_res = await client.get(
+            f"{SUPABASE_URL}/rest/v1/nk_staff?id=eq.{staff_id}&select=supabase_user_id",
+            headers={
+                "apikey": service_key,
+                "Authorization": f"Bearer {service_key}"
+            }
+        )
+        staff = staff_res.json()
+        if not staff or not staff[0].get("supabase_user_id"):
+            return {"success": True, "note": "No auth user to delete"}
+
+        user_id = staff[0]["supabase_user_id"]
+
+        await client.delete(
+            f"{SUPABASE_URL}/auth/v1/admin/users/{user_id}",
+            headers={
+                "apikey": service_key,
+                "Authorization": f"Bearer {service_key}"
+            }
+        )
+
+        return {"success": True}
 
 @app.post("/analyze", response_model=EEGAnalysis)
 async def analyze_eeg(file: UploadFile = File(...)):
