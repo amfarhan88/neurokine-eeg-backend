@@ -9,7 +9,10 @@ from pydantic import BaseModel
 from pydantic import BaseModel as BM
 from typing import Optional, List
 
-app = FastAPI(title="NeuroKine EEG Analysis API")
+app = FastAPI(
+    title="NeuroKine EEG Analysis API",
+    max_upload_size=100 * 1024 * 1024  # 100MB
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -228,12 +231,19 @@ async def delete_staff_user(staff_id: str):
 async def analyze_eeg(file: UploadFile = File(...)):
     if not file.filename.lower().endswith(('.edf', '.bdf')):
         raise HTTPException(400, "Only EDF and BDF files supported")
-    
+
+    # Read content first to check size
+    content = await file.read()
+    file_size_mb = len(content) / (1024 * 1024)
+    print(f"Received file: {file.filename}, size: {file_size_mb:.1f}MB")
+
+    if file_size_mb > 100:
+        raise HTTPException(413, f"File too large ({file_size_mb:.0f}MB). Maximum 100MB.")
+
     with tempfile.NamedTemporaryFile(
         suffix=os.path.splitext(file.filename)[1],
         delete=False
     ) as tmp:
-        content = await file.read()
         tmp.write(content)
         tmp_path = tmp.name
     
